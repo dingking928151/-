@@ -1,41 +1,121 @@
+import logging
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
 import json
-from sentence_transformers import SentenceTransformer
 
-class DataLoader:
-    def __init__(self, json_path):
-        self.json_path = json_path
-        self.data = self.load_data()
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')  # Load a pre-trained SentenceTransformer model
+class QdrantManager:
+    def __init__(self, host: str = 'localhost', port: int = 6333):
+        """Initialize Qdrant manager."""
+        self.client = QdrantClient(host=host, port=port)
+        self.collection_name = "job_knowledge_base"
 
-    def load_data(self):
-        with open(self.json_path, 'r') as file:
-            return json.load(file)
+    def connect(self) -> bool:
+        """Connect to Qdrant server."""
+        try:
+            self.client.get_collections()
+            logging.info('✓ Connected to Qdrant server.')
+            return True
+        except Exception as e:
+            logging.error(f'✗ Connection failed: {e}')
+            return False
 
-    def filter_jobs(self, location=None, min_salary=None, keywords=None):
-        filtered_jobs = self.data
-        if location:
-            filtered_jobs = [job for job in filtered_jobs if job.get('location') == location]
-        if min_salary:
-            filtered_jobs = [job for job in filtered_jobs if job.get('salary', 0) >= min_salary]
-        if keywords:
-            filtered_jobs = [job for job in filtered_jobs if any(keyword.lower() in job.get('description', '').lower() for keyword in keywords)]
-        return filtered_jobs
+    def create_collection(self, collection_name: str = None, vector_size: int = 384) -> bool:
+        """Create a new collection."""
+        try:
+            if collection_name:
+                self.collection_name = collection_name
+            
+            try:
+                self.client.delete_collection(self.collection_name)
+            except:
+                pass
+            
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+            )
+            logging.info(f'✓ Collection {self.collection_name} created.')
+            return True
+        except Exception as e:
+            logging.error(f'✗ Create collection failed: {e}')
+            return False
 
-    def vectorize_jobs(self, jobs):
-        descriptions = [job['description'] for job in jobs]
-        vectors = self.model.encode(descriptions)
-        return vectors
+    def import_vectorized_data(self, json_file_path: str) -> bool:
+        """Import vectorized data from JSON."""
+        try:
+            with open(json_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            points = []
+            for item in data:
+                point = PointStruct(
+                    id=int(item['job_id']),
+                    vector=item['vector'],
+                    payload={
+                        'title': item.get('title', ''),
+                        'company': item.get('company', ''),
+                        'location': item.get('location', ''),
+                        'salary': item.get('salary', ''),
+                        'description': item.get('description', '')
+                    }
+                )
+                points.append(point)
+            
+            self.client.upsert(collection_name=self.collection_name, points=points)
+            logging.info(f'✓ Imported {len(points)} records.')
+            return True
+        except Exception as e:
+            logging.error(f'✗ Import failed: {e}')
+            return False
 
-    def export_to_json(self, filtered_jobs, export_path):
-        with open(export_path, 'w') as file:
-            json.dump(filtered_jobs, file, indent=4)
+    def search_by_similarity(self, query_vector, limit: int = 10):
+        """Search for similar jobs."""
+        try:
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                limit=limit
+            )
+            return results
+        except Exception as e:
+            logging.error(f'✗ Search failed: {e}')
+            return []
 
-    def process_pipeline(self, location=None, min_salary=None, keywords=None, export_path='filtered_jobs.json'):
-        filtered_jobs = self.filter_jobs(location, min_salary, keywords)
-        vectors = self.vectorize_jobs(filtered_jobs)
-        self.export_to_json(filtered_jobs, export_path)
-        return filtered_jobs, vectors
+    def insert_job_data(self, job_data: dict, vector: list) -> bool:
+        """Insert job data."""
+        try:
+            point = PointStruct(
+                id=int(job_data.get('job_id', 0)),
+                vector=vector,
+                payload=job_data
+            )
+            self.client.upsert(collection_name=self.collection_name, points=[point])
+            return True
+        except Exception as e:
+            logging.error(f'✗ Insert failed: {e}')
+            return False
 
-# Example usage:
-# loader = DataLoader('path/to/job_data.json')
-# loader.process_pipeline(location='New York', min_salary=100000, keywords=['data scientist'])
+    def update_job(self, job_id: int, updated_payload: dict) -> bool:
+        """Update job information."""
+        try:
+            self.client.set_payload(
+                collection_name=self.collection_name,
+                payload=updated_payload,
+                points_selector=[job_id]
+            )
+            return True
+        except Exception as e:
+            logging.error(f'✗ Update failed: {e}')
+            return False
+
+    def delete_job(self, job_id: int) -> bool:
+        """Delete job."""
+        try:
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=[job_id]
+            )
+            return True
+        except Exception as e:
+            logging.error(f'✗ Delete failed: {e}')
+            return False
