@@ -1,64 +1,44 @@
 import logging
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 
 class QdrantManager:
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-        self.client = None
+    def __init__(self, host: str, port: int)
+        self.client = QdrantClient(host=host, port=port)
 
     def connect(self):
         try:
-            self.client = QdrantClient(host=self.host, port=self.port)
-            logging.info('Connected to Qdrant server at %s:%d', self.host, self.port)
+            self.client.info()
+            logging.info('Connected to Qdrant server.')
         except Exception as e:
-            logging.error('Failed to connect to Qdrant server: %s', e)
+            logging.error(f'Connection failed: {e}')
             raise
 
-    def create_collection(self, collection_name: str, vector_params: dict):
-        try:
-            self.client.recreate_collection(collection_name, vector_params)
-            logging.info('Collection %s created with parameters: %s', collection_name, vector_params)
-        except Exception as e:
-            logging.error('Failed to create collection: %s', e)
-            raise
+    def create_collection(self, collection_name: str):
+        vector_params = models.VectorParams(size=512, distance=models.Distance.COSINE)
+        self.client.recreate_collection(name=collection_name, vector_params=vector_params)
+        logging.info(f'Collection {collection_name} created.')
 
-    def import_vectorized_data(self, collection_name: str, json_data: list):
-        try:
-            self.client.upload_collection(collection_name, json_data)
-            logging.info('Vectorized data imported into collection %s', collection_name)
-        except Exception as e:
-            logging.error('Failed to import data: %s', e)
-            raise
+    def import_vectorized_data(self, collection_name: str, json_file_path: str):
+        import json
+        with open(json_file_path, 'r') as f:
+            data = json.load(f)
+            points = [models.Point(id=item['id'], vector=item['vector']) for item in data]
+            self.client.upsert(collection_name=collection_name, points=points)
+            logging.info(f'Data imported into collection {collection_name}.')
 
-    def search_by_similarity(self, collection_name: str, query_vector: list, limit: int = 10):
-        try:
-            results = self.client.search(collection_name, query_vector, limit=limit)
-            logging.info('Search performed on collection %s', collection_name)
-            return results
-        except Exception as e:
-            logging.error('Failed to perform search: %s', e)
-            raise
+    def search_by_similarity(self, collection_name: str, query_vector: list):
+        results = self.client.search(collection_name=collection_name, query_vector=query_vector)
+        logging.info(f'Search results: {results}')
+        return results
 
-    def update_job(self, job_id: str, updated_data: dict):
-        try:
-            # Logic to update a job in the database
-            logging.info('Job %s updated', job_id)
-        except Exception as e:
-            logging.error('Failed to update job: %s', e)
-            raise
+    def insert_job_data(self, collection_name: str, job_id: str, vector: list):
+        self.client.upsert(collection_name=collection_name, points=[models.Point(id=job_id, vector=vector)])
+        logging.info(f'Job data for {job_id} inserted.')
 
-    def delete_job(self, job_id: str):
-        try:
-            # Logic to delete a job from the database
-            logging.info('Job %s deleted', job_id)
-        except Exception as e:
-            logging.error('Failed to delete job: %s', e)
-            raise
+    def update_job(self, collection_name: str, job_id: str, update_payload: dict):
+        self.client.upsert(collection_name=collection_name, points=[models.Point(id=job_id, payload=update_payload)])
+        logging.info(f'Job {job_id} updated.')
 
-    def insert_job_data(self, job_id: str, job_data: dict):
-        # Method stub for job data insertion
-        pass
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+    def delete_job(self, collection_name: str, job_id: str):
+        self.client.delete(collection_name=collection_name, points=[job_id])
+        logging.info(f'Job {job_id} deleted.')
