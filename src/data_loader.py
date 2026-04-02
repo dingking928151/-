@@ -1,121 +1,66 @@
-import logging
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
 import json
+from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Any
 
-class QdrantManager:
-    def __init__(self, host: str = 'localhost', port: int = 6333):
-        """Initialize Qdrant manager."""
-        self.client = QdrantClient(host=host, port=port)
-        self.collection_name = "job_knowledge_base"
+class DataLoader:
+    def __init__(self, json_path: str):
+        self.json_path = json_path
+        self.data = self.load_data()
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
 
-    def connect(self) -> bool:
-        """Connect to Qdrant server."""
-        try:
-            self.client.get_collections()
-            logging.info('✓ Connected to Qdrant server.')
-            return True
-        except Exception as e:
-            logging.error(f'✗ Connection failed: {e}')
-            return False
+    def load_data(self) -> List[Dict[str, Any]]:
+        """Load job data from JSON file."""
+        with open(self.json_path, 'r', encoding='utf-8') as file:
+            return json.load(file)
 
-    def create_collection(self, collection_name: str = None, vector_size: int = 384) -> bool:
-        """Create a new collection."""
-        try:
-            if collection_name:
-                self.collection_name = collection_name
-            
-            try:
-                self.client.delete_collection(self.collection_name)
-            except:
-                pass
-            
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
-            )
-            logging.info(f'✓ Collection {self.collection_name} created.')
-            return True
-        except Exception as e:
-            logging.error(f'✗ Create collection failed: {e}')
-            return False
+    def filter_jobs(self, location=None, min_salary=None, keywords=None) -> List[Dict]:
+        """Filter jobs based on criteria."""
+        filtered_jobs = self.data
+        if location:
+            filtered_jobs = [job for job in filtered_jobs 
+                           if location.lower() in job.get('location', '').lower()]
+        if min_salary:
+            filtered_jobs = [job for job in filtered_jobs 
+                           if self._extract_salary(job.get('salary', '')) >= min_salary]
+        if keywords:
+            filtered_jobs = [job for job in filtered_jobs 
+                           if any(kw.lower() in job.get('description', '').lower() for kw in keywords)]
+        return filtered_jobs
 
-    def import_vectorized_data(self, json_file_path: str) -> bool:
-        """Import vectorized data from JSON."""
-        try:
-            with open(json_file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            points = []
-            for item in data:
-                point = PointStruct(
-                    id=int(item['job_id']),
-                    vector=item['vector'],
-                    payload={
-                        'title': item.get('title', ''),
-                        'company': item.get('company', ''),
-                        'location': item.get('location', ''),
-                        'salary': item.get('salary', ''),
-                        'description': item.get('description', '')
-                    }
-                )
-                points.append(point)
-            
-            self.client.upsert(collection_name=self.collection_name, points=points)
-            logging.info(f'✓ Imported {len(points)} records.')
-            return True
-        except Exception as e:
-            logging.error(f'✗ Import failed: {e}')
-            return False
+    def _extract_salary(self, salary_str: str) -> int:
+        """Extract salary value from string."""
+        import re
+        numbers = re.findall(r'\d+', salary_str.replace(',', ''))
+        return int(numbers[0]) // 1000 if numbers and int(numbers[0]) > 10000 else (int(numbers[0]) if numbers else 0)
 
-    def search_by_similarity(self, query_vector, limit: int = 10):
-        """Search for similar jobs."""
-        try:
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
-            return results
-        except Exception as e:
-            logging.error(f'✗ Search failed: {e}')
-            return []
+    def vectorize_jobs(self, jobs: List[Dict]) -> List[Dict]:
+        """Vectorize jobs and return with vector data."""
+        vectorized_jobs = []
+        for job in jobs:
+            text = f"{job.get('title', '')} {job.get('description', '')} {job.get('company', '')}"
+            vector = self.model.encode(text).tolist()
+            vectorized_job = {
+                "job_id": job.get('job_id'),
+                "title": job.get('title'),
+                "company": job.get('company'),
+                "location": job.get('location'),
+                "salary": job.get('salary'),
+                "description": job.get('description'),
+                "vector": vector,
+                "vector_dimension": len(vector)
+            }
+            vectorized_jobs.append(vectorized_job)
+        return vectorized_jobs
 
-    def insert_job_data(self, job_data: dict, vector: list) -> bool:
-        """Insert job data."""
-        try:
-            point = PointStruct(
-                id=int(job_data.get('job_id', 0)),
-                vector=vector,
-                payload=job_data
-            )
-            self.client.upsert(collection_name=self.collection_name, points=[point])
-            return True
-        except Exception as e:
-            logging.error(f'✗ Insert failed: {e}')
-            return False
+    def export_to_json(self, vectorized_jobs: List[Dict], export_path: str):
+        """Export vectorized jobs to JSON file."""
+        with open(export_path, 'w', encoding='utf-8') as file:
+            json.dump(vectorized_jobs, file, ensure_ascii=False, indent=2)
 
-    def update_job(self, job_id: int, updated_payload: dict) -> bool:
-        """Update job information."""
-        try:
-            self.client.set_payload(
-                collection_name=self.collection_name,
-                payload=updated_payload,
-                points_selector=[job_id]
-            )
-            return True
-        except Exception as e:
-            logging.error(f'✗ Update failed: {e}')
-            return False
-
-    def delete_job(self, job_id: int) -> bool:
-        """Delete job."""
-        try:
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=[job_id]
-            )
-            return True
-        except Exception as e:
-            logging.error(f'✗ Delete failed: {e}')
-            return False
+    def process_pipeline(self, location=None, min_salary=None, keywords=None, 
+                        export_path='data/vectorized_jobs.json'):
+        """Complete processing pipeline."""
+        filtered_jobs = self.filter_jobs(location, min_salary, keywords)
+        vectorized_jobs = self.vectorize_jobs(filtered_jobs)
+        self.export_to_json(vectorized_jobs, export_path)
+        return vectorized_jobs
